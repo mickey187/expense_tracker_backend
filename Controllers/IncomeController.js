@@ -1,6 +1,10 @@
 const Expense = require("../models/Expense");
 const Income = require("../models/Income");
 const mongoose = require("mongoose");
+const axios = require("axios");
+const dotenv = require("dotenv");
+dotenv.config();
+const CURRENCY_FREAKS_API_KEY = process.env.CURRENCY_FREAK_API_KEY;
 
 const createIncome = async (req, res) => {
   try {
@@ -75,7 +79,7 @@ const getTotalIncome = async (req, res) => {
 
 const getCurrentBalance = async (req, res) => {
   try {
-    const {userId} = req.params;
+    const { userId } = req.params;
     const incomes = await Income.aggregate([
       { $match: { user: new mongoose.Types.ObjectId(userId) } },
       { $group: { _id: null, totalIncome: { $sum: "$amount" } } },
@@ -99,7 +103,64 @@ const getCurrentBalance = async (req, res) => {
   }
 };
 
-const getIncomeByMonth = async(req, res) => {
+const getCurrentBalanceFx = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    // Step 1: Fetch total income
+    const totalIncomeResult = await Income.aggregate([
+      { $match: { user: new mongoose.Types.ObjectId(userId) } },
+      { $group: { _id: null, totalIncome: { $sum: "$amount" } } },
+    ]);
+    const totalIncome = totalIncomeResult[0]?.totalIncome || 0;
+
+    // Step 2: Fetch total expenses
+    const totalExpensesResult = await Expense.aggregate([
+      { $match: { user: new mongoose.Types.ObjectId(userId) } },
+      { $group: { _id: null, totalExpenses: { $sum: "$amount" } } },
+    ]);
+    const totalExpenses = totalExpensesResult[0]?.totalExpenses || 0;
+
+    // Step 3: Calculate balance
+    const balance = totalIncome - totalExpenses;
+
+    // Step 4: Fetch conversion rates from Currency Freaks API
+    const response = await axios.get(
+      `https://api.currencyfreaks.com/latest?apikey=${CURRENCY_FREAKS_API_KEY}`
+    );
+
+    const rates = response.data.rates;
+    const etbRate = parseFloat(rates.ETB);
+    const eurRate = parseFloat(rates.EUR);
+
+    if (!etbRate || !eurRate) {
+      return res
+        .status(500)
+        .json({ message: "Failed to fetch conversion rates" ,
+          error: true, });
+    }
+
+    // Step 5: Convert balance to ETB and EUR
+    const balanceETB = balance * etbRate;
+    const balanceEUR = balance * eurRate;
+    console.log("balanceETB", balanceETB);
+
+    // Step 6: Send the result
+    res.status(200).json({
+      message: "success",
+      error: false,
+      data: {
+        balanceUSD: balance.toFixed(2), // Balance in USD
+        balanceETB: balanceETB.toFixed(2), // Converted to ETB
+        balanceEUR: balanceEUR.toFixed(2), // Converted to EUR}
+      },
+    });
+  } catch (error) {
+    console.error(error);
+   return res.status(500).json({ message: "Error fetching balance fx" });
+  }
+};
+
+const getIncomeByMonth = async (req, res) => {
   try {
     const incomesByMonth = await Income.aggregate([
       {
@@ -138,19 +199,18 @@ const getIncomeByMonth = async(req, res) => {
         $sort: { _id: 1 }, // Sort by month number (optional)
       },
     ]);
-    
+
     console.log(incomesByMonth);
     return res.status(200).json({
       message: "success",
       error: false,
-      data: incomesByMonth
-    })
-    
+      data: incomesByMonth,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Error fetching income" });
   }
-}
+};
 
 const updateIncome = async (req, res) => {
   try {
@@ -188,6 +248,7 @@ module.exports = {
   getTotalIncome,
   getIncomeByMonth,
   getCurrentBalance,
+  getCurrentBalanceFx,
   updateIncome,
   deleteIncome,
 };
